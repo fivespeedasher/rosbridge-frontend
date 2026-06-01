@@ -20,12 +20,15 @@ interface CameraInfo {
   timestamp: Date;
 }
 
+// web_video_server MJPEG stream URL
+const MJPEG_STREAM_URL = 'http://localhost:9093/stream?topic=/camera/color/image_raw';
+
 function App() {
   const [ros, setRos] = useState<Ros | null>(null);
   const [status, setStatus] = useState<ROSStatus>({ connected: false });
-  const [imageData, setImageData] = useState<string>('');
   const [cameraInfo, setCameraInfo] = useState<CameraInfo | null>(null);
-  const imageTopicRef = useRef<Topic | null>(null);
+  const [streamActive, setStreamActive] = useState(false);
+  const [streamError, setStreamError] = useState<string | null>(null);
   const cameraInfoTopicRef = useRef<Topic | null>(null);
   const serviceRef = useRef<Service | null>(null);
 
@@ -55,9 +58,6 @@ function App() {
 
     // Cleanup on unmount
     return () => {
-      if (imageTopicRef.current) {
-        imageTopicRef.current.unsubscribe();
-      }
       if (cameraInfoTopicRef.current) {
         cameraInfoTopicRef.current.unsubscribe();
       }
@@ -70,107 +70,6 @@ function App() {
     if (!ros || !status.connected) return;
 
     try {
-      // Set up image topic
-      const imageTopic = new Topic({
-        ros: ros,
-        name: '/camera/color/image_raw',
-        messageType: 'sensor_msgs/Image'
-      });
-
-      imageTopic.subscribe((message: any) => {
-        console.log('Received image message:', {
-          encoding: message.encoding,
-          width: message.width,
-          height: message.height,
-          dataLength: message.data?.length || 0,
-          step: message.step
-        });
-
-        // Convert ROS Image message to base64 data URL for display
-        if (message.data && message.width && message.height) {
-          try {
-            // Validate dimensions
-            if (message.width <= 0 || message.height <= 0) {
-              console.warn(`Invalid image dimensions: ${message.width}x${message.height}`);
-              return;
-            }
-
-            // Create canvas to render the image
-            const canvas = document.createElement('canvas');
-            canvas.width = message.width;
-            canvas.height = message.height;
-            const ctx = canvas.getContext('2d');
-
-            if (!ctx) {
-              console.error('Could not get canvas context');
-              return;
-            }
-
-            // Create ImageData from raw bytes
-            const imageData = ctx.createImageData(message.width, message.height);
-
-            // Convert message.data to Uint8Array if it's not already
-            const dataArray = message.data instanceof Uint8Array ?
-                message.data :
-                new Uint8Array(message.data);
-
-            if (message.encoding === 'rgb8') {
-              // RGB8: 3 bytes per pixel
-              for (let i = 0; i < dataArray.length && i/3 < imageData.data.length/4; i += 3) {
-                const pixelIndex = Math.floor(i / 3);
-                imageData.data[pixelIndex * 4 + 0] = dataArray[i];     // R
-                imageData.data[pixelIndex * 4 + 1] = dataArray[i + 1]; // G
-                imageData.data[pixelIndex * 4 + 2] = dataArray[i + 2]; // B
-                imageData.data[pixelIndex * 4 + 3] = 255;              // A
-              }
-            } else if (message.encoding === 'bgr8') {
-              // BGR8: 3 bytes per pixel (BGR order)
-              for (let i = 0; i < dataArray.length && i/3 < imageData.data.length/4; i += 3) {
-                const pixelIndex = Math.floor(i / 3);
-                imageData.data[pixelIndex * 4 + 0] = dataArray[i + 2]; // R
-                imageData.data[pixelIndex * 4 + 1] = dataArray[i + 1]; // G
-                imageData.data[pixelIndex * 4 + 2] = dataArray[i];     // B
-                imageData.data[pixelIndex * 4 + 3] = 255;              // A
-              }
-            } else if (message.encoding === 'mono8') {
-              // MONO8: 1 byte per pixel (grayscale)
-              for (let i = 0; i < dataArray.length && i < imageData.data.length/4; i++) {
-                const pixelIndex = i;
-                const intensity = dataArray[i];
-                imageData.data[pixelIndex * 4 + 0] = intensity; // R
-                imageData.data[pixelIndex * 4 + 1] = intensity; // G
-                imageData.data[pixelIndex * 4 + 2] = intensity; // B
-                imageData.data[pixelIndex * 4 + 3] = 255;       // A
-              }
-            } else {
-              console.warn(`Unsupported image encoding: ${message.encoding}`);
-              return;
-            }
-
-            // Draw image to canvas and convert to data URL
-            ctx.putImageData(imageData, 0, 0);
-            const dataUrl = canvas.toDataURL('image/png');
-            setImageData(dataUrl);
-
-            // Debug: Log first few pixel values
-            if (dataArray.length > 0) {
-              console.log('First 10 bytes of image data:', Array.from(dataArray.slice(0, 10)));
-            }
-
-          } catch (error) {
-            console.error('Error processing image:', error);
-          }
-        } else {
-          console.warn('Image message missing required fields:', {
-            hasData: !!message.data,
-            width: message.width,
-            height: message.height
-          });
-        }
-      });
-
-      imageTopicRef.current = imageTopic;
-
       // Set up camera info topic
       const cameraInfoTopic = new Topic({
         ros: ros,
@@ -241,8 +140,17 @@ function App() {
     }
   };
 
-  const handlePlay = () => callService(true);
-  const handleStop = () => callService(false);
+  const handlePlay = () => {
+    callService(true);
+    setStreamActive(true);
+    setStreamError(null);
+  };
+
+  const handleStop = () => {
+    callService(false);
+    setStreamActive(false);
+    setStreamError(null);
+  };
 
   const getErrorMessage = () => {
     if (status.error) return status.error;
@@ -254,6 +162,10 @@ function App() {
     if (!status.serviceResult) return 'No service calls yet';
     const timeAgo = Math.round((Date.now() - status.serviceResult.timestamp.getTime()) / 1000);
     return `Service call ${status.serviceResult.success ? 'succeeded' : 'failed'} ${timeAgo}s ago`;
+  };
+
+  const handleStreamError = () => {
+    setStreamError('Stream unavailable — is web_video_server running on port 9093?');
   };
 
   return (
@@ -309,7 +221,7 @@ function App() {
           </CardContent>
         </Card>
 
-        {/* Image Display */}
+        {/* MJPEG Camera Stream */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center justify-between">
@@ -323,19 +235,29 @@ function App() {
           </CardHeader>
           <CardContent>
             <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 min-h-64 flex items-center justify-center">
-              {imageData ? (
-                <div className="flex flex-col items-center space-y-4">
-                  <img
-                    src={imageData}
-                    alt="ROS Camera Stream"
-                    className="max-w-full max-h-96 object-contain"
-                  />
-                  {cameraInfo && (
-                    <div className="text-sm text-muted-foreground space-y-1">
-                      <div>Image Size: {cameraInfo.width} × {cameraInfo.height} pixels</div>
-                      <div>Distortion Model: {cameraInfo.distortionModel}</div>
-                      <div>Last Updated: {cameraInfo.timestamp.toLocaleTimeString()}</div>
+              {streamActive ? (
+                <div className="flex flex-col items-center space-y-4 w-full">
+                  {streamError ? (
+                    <div className="text-destructive text-center">
+                      <p className="font-semibold">Stream Error</p>
+                      <p className="text-sm">{streamError}</p>
                     </div>
+                  ) : (
+                    <>
+                      <img
+                        src={MJPEG_STREAM_URL}
+                        alt="ROS Camera MJPEG Stream"
+                        className="max-w-full max-h-96 object-contain rounded"
+                        onError={handleStreamError}
+                      />
+                      {cameraInfo && (
+                        <div className="text-sm text-muted-foreground space-y-1">
+                          <div>Image Size: {cameraInfo.width} × {cameraInfo.height} pixels</div>
+                          <div>Distortion Model: {cameraInfo.distortionModel}</div>
+                          <div>Last Updated: {cameraInfo.timestamp.toLocaleTimeString()}</div>
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               ) : (
@@ -355,12 +277,12 @@ function App() {
           </CardHeader>
           <CardContent className="text-sm space-y-2">
             <div><strong>WebSocket:</strong> ws://localhost:9092</div>
-            <div><strong>Image Topic:</strong> /camera/color/image_raw</div>
+            <div><strong>MJPEG Stream:</strong> http://localhost:9093/stream?topic=/camera/color/image_raw</div>
             <div><strong>Camera Info Topic:</strong> /camera/color/camera_info</div>
             <div><strong>Service:</strong> /ros_web_bridge_node/play_bag</div>
             <div><strong>Bag File:</strong> lvdata_2026-05-11-15-54-05.bag</div>
             <div className="pt-2">
-              <strong>Active Subscriptions:</strong> {imageTopicRef.current ? 'Image ✅' : 'Image ❌'}, {cameraInfoTopicRef.current ? 'Camera Info ✅' : 'Camera Info ❌'}
+              <strong>Active Subscriptions:</strong> {cameraInfoTopicRef.current ? 'Camera Info ✅' : 'Camera Info ❌'}
             </div>
           </CardContent>
         </Card>

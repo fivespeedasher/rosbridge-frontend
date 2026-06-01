@@ -1,12 +1,12 @@
 # ROS Web Bridge - Frontend Application
 
-React frontend for the ROS Web Bridge project. Provides web interface to control ROS bag file playback and display camera image streams.
+React frontend for the ROS Web Bridge project. Provides web interface to control ROS bag file playback and display camera image streams via MJPEG over HTTP.
 
 ## Overview
 
-This frontend application connects to a ROS backend via WebSocket using ROSLIB.js to:
-- Control bag file playback (play/stop)
-- Display camera image streams from ROS topics
+This frontend application connects to a ROS backend via WebSocket (ROSLIB.js) and HTTP MJPEG stream (`web_video_server`) to:
+- Control bag file playback (play/stop) via ROS service calls
+- Display camera image streams via MJPEG over HTTP
 - Monitor ROS connection status
 - Provide user-friendly interface for robotics data visualization
 
@@ -15,12 +15,14 @@ This frontend application connects to a ROS backend via WebSocket using ROSLIB.j
 ## Architecture
 
 - **Frontend**: React 19.2.6 + TypeScript + Vite + Tailwind CSS + shadcn/ui
-- **ROS Integration**: roslibjs WebSocket client
-- **Communication**: WebSocket to `rosbridge_server` (port 9092)
+- **ROS Integration**: roslibjs WebSocket client + MJPEG HTTP stream
+- **WebSocket**: `ws://localhost:9092` (rosbridge_server)
+- **MJPEG Stream**: `http://localhost:9093/stream?topic=/camera/color/image_raw` (web_video_server)
 - **Services**: `/ros_web_bridge_node/play_bag` (start/stop bag playback)
 - **Topics**: 
-  - `/camera/color/image_raw` (camera image streaming)
   - `/camera/color/camera_info` (camera calibration and resolution data)
+
+> **Note**: The camera image stream is served via `web_video_server` (MJPEG over HTTP), not raw ROS topic subscription. This avoids expensive JavaScript canvas pixel decoding and provides better performance. The `web_video_server` is started automatically by the backend launch file.
 
 ## 🚀 How to Run / Compile
 
@@ -101,9 +103,11 @@ After starting the development server, verify everything is working:
 
 3. **Test camera streaming**:
    - Click "Play Bag" button
+   - Browser loads MJPEG stream from `web_video_server` at `http://localhost:9093`
    - Should see camera image appear
    - Should display resolution (e.g., "1280 × 720")
    - Should show distortion model (e.g., "plumb_bob")
+   - **No image data?** Ensure `web_video_server` is running (it starts with `ros_web_bridge.launch`)
 
 ### Development
 
@@ -137,21 +141,31 @@ web_frontend/
 │   ├── components/ui/      # shadcn/ui components
 │   └── lib/utils.ts        # Utility functions
 ├── docs/                   # Project documentation
-│   ├── architecture.md     # Technical architecture
-│   ├── decisions.md        # Design decisions
-│   ├── progress.md         # Development progress
-│   └── troubleshooting.md  # Issue resolution
+│   └── architecture.md     # Technical architecture
 ├── package.json           # Dependencies and scripts
 ├── vite.config.ts         # Vite configuration
 └── tailwind.config.js     # Tailwind CSS configuration
 ```
 
+### Core Development Files
+
+| File | Purpose |
+|------|---------|
+| `src/main.tsx` | Entry point — mounts the React app to the DOM |
+| `src/App.tsx` | Root component — where the main app layout, ROS connection, and page logic live |
+| `src/index.css` | Global styles + Tailwind CSS directives |
+| `src/components/ui/` | **shadcn/ui** components — pre-built, reusable UI pieces (button, card, dialog, toast, etc.) |
+| `src/lib/utils.ts` | Utility helpers (e.g., `cn()` for Tailwind class merging) |
+| `src/hooks/use-toast.ts` | Custom hook for toast/sonner notifications |
+| `vite.config.ts` | Vite build tool configuration |
+| `tailwind.config.js` | Tailwind CSS customization (theme, colors, etc.) |
+| `package.json` | Dependencies, scripts, and project metadata |
+
+Think of these as the `src/*.cpp` equivalent in a ROS package — the files you'll edit most during development.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md) - Technical architecture and design
-- [Decisions](docs/decisions.md) - Design decisions and rationale
-- [Progress](docs/progress.md) - Implementation status and milestones
-- [Troubleshooting](docs/troubleshooting.md) - Common issues and solutions
 
 **Related Documentation**: 
 - [Backend Documentation](../catkin_ws2/docs/) - ROS backend documentation
@@ -162,11 +176,11 @@ web_frontend/
 ### Current Features
 - ✅ WebSocket connection to ROS backend
 - ✅ Bag playback control (play/stop)
-- ✅ Camera image streaming display
+- ✅ Camera image streaming via MJPEG over HTTP (web_video_server)
 - ✅ Camera info display (resolution, distortion model, timestamp)
 - ✅ Connection status monitoring
 - ✅ Professional UI with shadcn/ui components
-- ✅ Type-safe ROS integration with TypeScript
+- ✅ Type-safe integration with TypeScript
 
 ### Planned Features
 - Connection retry and auto-reconnect
@@ -247,15 +261,34 @@ source devel/setup.bash
 roslaunch ros_web_bridge ros_web_bridge.launch
 ```
 
-If rosbridge is running on a different port, update `App.tsx` line 36 accordingly.
+If rosbridge is running on a different port, update the URL in `App.tsx` accordingly.
 
-#### 6. **Build Fails with Type Errors**
+#### 6. **MJPEG Stream Shows Broken Image / Error**
+```
+Stream unavailable — is web_video_server running on port 9093?
+```
+**Solution**: Verify `web_video_server` started with the launch file:
+```bash
+# Check if web_video_server is running
+ps aux | grep web_video_server
+
+# If not, start it manually (or check the launch file includes it):
+rosrun web_video_server web_video_server _port:=9093 _address:=localhost
+```
+
+#### 7. **MJPEG Stream CORS / Mixed Content**
+```
+Access to image at http://localhost:9093/... has been blocked by CORS policy
+```
+**Solution**: Ensure the frontend and backend are both accessed over `localhost` (not `127.0.0.1` or a different hostname).
+
+#### 8. **Build Fails with Type Errors**
 ```
 Type error: Property 'width' does not exist on type 'any'
 ```
 **Solution**: Check the TypeScript types in `App.tsx`. The latest version should have proper typing for CameraInfo messages.
 
-#### 7. **ROSLIB Import Error - "does not provide an export named 'default'"**
+#### 9. **ROSLIB Import Error - "does not provide an export named 'default'"**
 ```
 Uncaught SyntaxError: The requested module '/node_modules/.vite/deps/roslib.js?v=25fdab7c' does not provide an export named 'default' (at App.tsx:5:8)
 ```
@@ -297,7 +330,20 @@ cd ../catkin_ws2
 roslaunch ros_web_bridge ros_web_bridge.launch
 ```
 
-Verify the backend is accessible at `ws://localhost:9092` before starting the frontend.
+This launch file starts three services:
+- **rosbridge_server** (WebSocket on port 9092) — for service calls and camera info
+- **web_video_server** (HTTP MJPEG on port 9093) — for camera image streaming
+- **ros_web_bridge_node** — bag playback service
+
+The frontend connects to both:
+- `ws://localhost:9092` — ROS WebSocket (service calls, camera_info topic)
+- `http://localhost:9093` — MJPEG stream (camera image display)
+
+> To use a different port for web_video_server, pass the argument:
+> ```bash
+> roslaunch ros_web_bridge ros_web_bridge.launch web_video_port:=9094
+> ```
+> Then update the `MJPEG_STREAM_URL` constant in `src/App.tsx` to match.
 
 ## Contributing
 
