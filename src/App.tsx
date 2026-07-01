@@ -2,7 +2,11 @@ import { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Ros, Topic, Service } from 'roslib';
+import { ROS_WS_URL, STREAM_URL, STREAM_TYPE } from './config';
+import { decodePointCloud2, type PointCloud2 } from './lib/pointcloud2';
+import PointCloudView, { type PointCloudFrame } from './components/PointCloudView';
 
 interface ROSStatus {
   connected: boolean;
@@ -20,23 +24,29 @@ interface CameraInfo {
   timestamp: Date;
 }
 
-// web_video_server MJPEG stream URL
-const MJPEG_STREAM_URL = 'http://localhost:9093/stream?topic=/camera/color/image_raw';
-
 function App() {
   const [ros, setRos] = useState<Ros | null>(null);
   const [status, setStatus] = useState<ROSStatus>({ connected: false });
   const [cameraInfo, setCameraInfo] = useState<CameraInfo | null>(null);
   const [streamActive, setStreamActive] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [showCamera, setShowCamera] = useState(true);
+  const [showCloudFilter, setShowCloudFilter] = useState(true); // default on — only filtered cloud used
+  const [filterFrame, setFilterFrame] = useState<PointCloudFrame | null>(null);
+  const [filterStats, setFilterStats] = useState<{ count: number; frameId: string } | null>(null);
+  const [showDetectionCloud, setShowDetectionCloud] = useState(false);
+  const [detectionFrame, setDetectionFrame] = useState<PointCloudFrame | null>(null);
+  const [detectionStats, setDetectionStats] = useState<{ count: number; frameId: string } | null>(null);
   const cameraInfoTopicRef = useRef<Topic | null>(null);
+  const filterTopicRef = useRef<Topic | null>(null);
+  const detectionTopicRef = useRef<Topic | null>(null);
   const serviceRef = useRef<Service | null>(null);
 
   // Connect to ROS bridge
   useEffect(() => {
-    console.log('Attempting to connect to ROS bridge at ws://localhost:9092');
+    console.log(`Attempting to connect to ROS bridge at ${ROS_WS_URL}`);
     const rosInstance = new Ros({
-      url: 'ws://localhost:9092'
+      url: ROS_WS_URL
     });
 
     rosInstance.on('connection', () => {
@@ -61,37 +71,65 @@ function App() {
       if (cameraInfoTopicRef.current) {
         cameraInfoTopicRef.current.unsubscribe();
       }
+      if (filterTopicRef.current) {
+        filterTopicRef.current.unsubscribe();
+      }
+      if (detectionTopicRef.current) {
+        detectionTopicRef.current.unsubscribe();
+      }
       rosInstance.close();
     };
   }, []);
 
-  // Subscribe to topics when connected
+  // Subscribe to camera info topic when connected and showCamera is on.
+  useEffect(() => {
+    if (!ros || !status.connected) return;
+
+    if (showCamera) {
+      try {
+        const cameraInfoTopic = new Topic({
+          ros: ros,
+          name: '/camera/color/camera_info',
+          messageType: 'sensor_msgs/CameraInfo'
+        });
+
+        cameraInfoTopic.subscribe((message: any) => {
+          if (message.width && message.height) {
+            setCameraInfo({
+              width: message.width,
+              height: message.height,
+              distortionModel: message.distortion_model || 'unknown',
+              timestamp: new Date()
+            });
+          }
+        });
+
+        cameraInfoTopicRef.current = cameraInfoTopic;
+      } catch (error) {
+        console.error('Error setting up camera info topic:', error);
+        setStatus(prev => ({ ...prev, error: 'Failed to set up camera info topic' }));
+      }
+    } else {
+      if (cameraInfoTopicRef.current) {
+        cameraInfoTopicRef.current.unsubscribe();
+        cameraInfoTopicRef.current = null;
+      }
+      setCameraInfo(null);
+    }
+
+    return () => {
+      if (cameraInfoTopicRef.current) {
+        cameraInfoTopicRef.current.unsubscribe();
+        cameraInfoTopicRef.current = null;
+      }
+    };
+  }, [ros, status.connected, showCamera]);
+
+  // Set up PlayBag service (always needed, no toggle)
   useEffect(() => {
     if (!ros || !status.connected) return;
 
     try {
-      // Set up camera info topic
-      const cameraInfoTopic = new Topic({
-        ros: ros,
-        name: '/camera/color/camera_info',
-        messageType: 'sensor_msgs/CameraInfo'
-      });
-
-      cameraInfoTopic.subscribe((message: any) => {
-        // Extract width, height, and distortion model from CameraInfo
-        if (message.width && message.height) {
-          setCameraInfo({
-            width: message.width,
-            height: message.height,
-            distortionModel: message.distortion_model || 'unknown',
-            timestamp: new Date()
-          });
-        }
-      });
-
-      cameraInfoTopicRef.current = cameraInfoTopic;
-
-      // Set up service
       const bagService = new Service({
         ros: ros,
         name: '/ros_web_bridge_node/play_bag',
@@ -104,6 +142,107 @@ function App() {
       setStatus(prev => ({ ...prev, error: 'Failed to set up topics' }));
     }
   }, [ros, status.connected]);
+
+  // Subscribe to the filtered LiDAR point cloud (/livox/filtered)
+  useEffect(() => {
+    if (!ros || !status.connected) return;
+
+    if (streamActive && showCloudFilter) {
+      const filterTopic = new Topic({
+        ros: ros,
+        name: '/livox/filtered',
+        messageType: 'sensor_msgs/PointCloud2',
+        compression: 'cbor',
+      });
+
+      filterTopic.subscribe((message: any) => {
+        const decoded = decodePointCloud2(message as PointCloud2);
+        if (decoded.count > 0) {
+          setFilterFrame({
+            positions: decoded.positions,
+            intensities: decoded.intensities,
+            count: decoded.count,
+            frameId: decoded.frameId,
+          });
+          setFilterStats({ count: decoded.count, frameId: decoded.frameId });
+        }
+      });
+
+      filterTopicRef.current = filterTopic;
+    } else {
+      if (filterTopicRef.current) {
+        filterTopicRef.current.unsubscribe();
+        filterTopicRef.current = null;
+      }
+      setFilterFrame(null);
+    }
+
+    return () => {
+      if (filterTopicRef.current) {
+        filterTopicRef.current.unsubscribe();
+        filterTopicRef.current = null;
+      }
+    };
+  }, [ros, status.connected, streamActive, showCloudFilter]); // showCloudFilter defaults true
+
+  // Enable/disable the backend camera_frame_node via service call
+  useEffect(() => {
+    if (!ros || !status.connected) return;
+
+    const enableService = new Service({
+      ros: ros,
+      name: '/camera_frame_node/set_enabled',
+      serviceType: 'std_srvs/SetBool',
+    });
+
+    enableService.callService({ data: showDetectionCloud }, (response: any) => {
+      console.log('Detection Cloud enable service:', response.message);
+    });
+
+    // No cleanup needed — one-shot service call
+  }, [ros, status.connected, showDetectionCloud]);
+
+  // Subscribe to /camera/frame/points (detection LiDAR in camera frame)
+  useEffect(() => {
+    if (!ros || !status.connected) return;
+
+    if (streamActive && showDetectionCloud) {
+      const detTopic = new Topic({
+        ros: ros,
+        name: '/livox/inbox_voxel',
+        messageType: 'sensor_msgs/PointCloud2',
+        compression: 'cbor',
+      });
+
+      detTopic.subscribe((message: any) => {
+        const decoded = decodePointCloud2(message as PointCloud2);
+        if (decoded.count > 0) {
+          setDetectionFrame({
+            positions: decoded.positions,
+            intensities: decoded.intensities,
+            count: decoded.count,
+            frameId: decoded.frameId,
+          });
+          setDetectionStats({ count: decoded.count, frameId: decoded.frameId });
+        }
+      });
+
+      detectionTopicRef.current = detTopic;
+    } else {
+      if (detectionTopicRef.current) {
+        detectionTopicRef.current.unsubscribe();
+        detectionTopicRef.current = null;
+      }
+      setDetectionFrame(null);
+    }
+
+    return () => {
+      if (detectionTopicRef.current) {
+        detectionTopicRef.current.unsubscribe();
+        detectionTopicRef.current = null;
+      }
+    };
+  }, [ros, status.connected, streamActive, showDetectionCloud]);
 
   const callService = async (start: boolean) => {
     if (!serviceRef.current) {
@@ -165,7 +304,30 @@ function App() {
   };
 
   const handleStreamError = () => {
-    setStreamError('Stream unavailable — is web_video_server running on port 9093?');
+    setStreamError(`Stream unavailable — is web_video_server running on port ${STREAM_URL.split(':')[2].split('/')[0]}?`);
+  };
+
+  const renderStream = () => {
+    if (STREAM_TYPE === 'h264') {
+      return (
+        <video
+          src={STREAM_URL}
+          className="max-w-full max-h-96 object-contain rounded"
+          autoPlay
+          muted
+          playsInline
+          onError={handleStreamError}
+        />
+      );
+    }
+    return (
+      <img
+        src={STREAM_URL}
+        alt="ROS Camera MJPEG Stream"
+        className="max-w-full max-h-96 object-contain rounded"
+        onError={handleStreamError}
+      />
+    );
   };
 
   return (
@@ -211,6 +373,34 @@ function App() {
               </Button>
             </div>
 
+            {/* Toggle checkboxes for display sections */}
+            <div className="flex items-center space-x-6 pt-1 flex-wrap gap-y-2">
+              <label className="flex items-center space-x-2 text-sm cursor-pointer select-none">
+                <Checkbox
+                  id="show-camera"
+                  checked={showCamera}
+                  onCheckedChange={(checked) => setShowCamera(checked === true)}
+                />
+                <span>Camera Stream</span>
+              </label>
+              <label className="flex items-center space-x-2 text-sm cursor-pointer select-none">
+                <Checkbox
+                  id="show-cloud-filter"
+                  checked={showCloudFilter}
+                  onCheckedChange={(checked) => setShowCloudFilter(checked === true)}
+                />
+                <span>Filter Cloud</span>
+              </label>
+              <label className="flex items-center space-x-2 text-sm cursor-pointer select-none">
+                <Checkbox
+                  id="show-detection-cloud"
+                  checked={showDetectionCloud}
+                  onCheckedChange={(checked) => setShowDetectionCloud(checked === true)}
+                />
+                <span>Detection Cloud</span>
+              </label>
+            </div>
+
             {/* Status */}
             <div className="text-sm space-y-2">
               {getErrorMessage() && (
@@ -221,8 +411,8 @@ function App() {
           </CardContent>
         </Card>
 
-        {/* MJPEG Camera Stream */}
-        <Card>
+        {/* Camera Stream — hidden when unchecked */}
+        {showCamera && (<Card>
           <CardHeader>
             <CardTitle className="flex items-center justify-between">
               <span>Camera Stream</span>
@@ -244,12 +434,7 @@ function App() {
                     </div>
                   ) : (
                     <>
-                      <img
-                        src={MJPEG_STREAM_URL}
-                        alt="ROS Camera MJPEG Stream"
-                        className="max-w-full max-h-96 object-contain rounded"
-                        onError={handleStreamError}
-                      />
+                      {renderStream()}
                       {cameraInfo && (
                         <div className="text-sm text-muted-foreground space-y-1">
                           <div>Image Size: {cameraInfo.width} × {cameraInfo.height} pixels</div>
@@ -268,21 +453,87 @@ function App() {
               )}
             </div>
           </CardContent>
-        </Card>
+        </Card>)}
+        {/* Filter Cloud (/livox/filtered) */}
+        {showCloudFilter && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+              <span>Filter Cloud</span>
+              {filterStats && (
+                <div className="text-sm font-normal text-muted-foreground">
+                  {filterStats.count.toLocaleString()} pts · {filterStats.frameId}
+                </div>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="border-2 border-dashed border-gray-300 rounded-lg p-2">
+              {streamActive ? (
+                <PointCloudView frame={filterFrame} height={480} />
+              ) : (
+                <div className="h-[480px] flex items-center justify-center text-muted-foreground text-center">
+                  <div>
+                    <p>No point cloud yet</p>
+                    <p className="text-sm">Click 'Play Bag' to stream /livox/filtered</p>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="text-xs text-muted-foreground mt-2">
+              Drag to orbit to rotate · Scroll to zoom
+            </div>
+          </CardContent>
+        </Card>)}
 
-        {/* Connection Info */}
+        {/* Detection Cloud (/livox/inbox_voxel — points inside detection bboxes) */}
+        {showDetectionCloud && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+              <span>Detection Cloud</span>
+              {detectionStats && (
+                <div className="text-sm font-normal text-muted-foreground">
+                  {detectionStats.count.toLocaleString()} pts · {detectionStats.frameId}
+                </div>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="border-2 border-dashed border-gray-300 rounded-lg p-2">
+              {streamActive ? (
+                <PointCloudView frame={detectionFrame} height={480} pointSize={0.2} />
+              ) : (
+                <div className="h-[480px] flex items-center justify-center text-muted-foreground text-center">
+                  <div>
+                    <p>No detection points yet</p>
+                    <p className="text-sm">Click 'Play Bag' and enable Detection Cloud</p>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="text-xs text-muted-foreground mt-2">
+              LiDAR points inside detection bboxes · Drag to orbit · Scroll to zoom
+            </div>
+          </CardContent>
+        </Card>)}
+
         <Card>
           <CardHeader>
             <CardTitle>Connection Information</CardTitle>
           </CardHeader>
           <CardContent className="text-sm space-y-2">
-            <div><strong>WebSocket:</strong> ws://localhost:9092</div>
-            <div><strong>MJPEG Stream:</strong> http://localhost:9093/stream?topic=/camera/color/image_raw</div>
+            <div><strong>WebSocket:</strong> {ROS_WS_URL}</div>
+            <div><strong>{STREAM_TYPE === 'h264' ? 'H.264' : 'MJPEG'} Stream:</strong> {STREAM_URL}</div>
             <div><strong>Camera Info Topic:</strong> /camera/color/camera_info</div>
+            <div><strong>LiDAR Topic:</strong> /livox/filtered (sensor_msgs/PointCloud2)</div>
+            <div><strong>Detection Topic:</strong> /livox/inbox_voxel (sensor_msgs/PointCloud2)</div>
             <div><strong>Service:</strong> /ros_web_bridge_node/play_bag</div>
             <div><strong>Bag File:</strong> lvdata_2026-05-11-15-54-05.bag</div>
             <div className="pt-2">
-              <strong>Active Subscriptions:</strong> {cameraInfoTopicRef.current ? 'Camera Info ✅' : 'Camera Info ❌'}
+              <strong>Active Subscriptions:</strong> {cameraInfoTopicRef.current ? 'Camera Info ✅' : 'Camera Info ❌'}{' · '}
+              {filterTopicRef.current ? 'Filter Cloud ✅' : 'Filter Cloud ❌'}{' · '}
+              {detectionTopicRef.current ? 'Detection Cloud ✅' : 'Detection Cloud ❌'}
             </div>
           </CardContent>
         </Card>

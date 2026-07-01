@@ -39,11 +39,12 @@ npx tsc --noEmit 2>&1 | grep -v "deprecated" || echo "✅ TypeScript compilation
 # Check ROS connection (optional)
 echo -n "Testing ROS WebSocket connection... "
 if command -v curl &> /dev/null; then
-    if timeout 2 curl -s http://localhost:9090 &> /dev/null; then
-        echo "✅ ROS bridge is accessible"
+    # rosbridge_websocket runs on port 9092 (see ros_web_bridge.launch)
+    if timeout 2 curl -s http://localhost:9092 &> /dev/null; then
+        echo "✅ ROS bridge is accessible on :9092"
     else
-        echo "⚠️  ROS bridge not reachable at localhost:9090"
-        echo "   Make sure to run: roslaunch ros_web_bridge ros_web_bridge.launch"
+        echo "⚠️  ROS bridge not reachable at localhost:9092"
+        echo "   Start it with: roslaunch ros_web_bridge ros_web_bridge.launch"
     fi
 else
     echo "⚠️  curl not available, skipping ROS check"

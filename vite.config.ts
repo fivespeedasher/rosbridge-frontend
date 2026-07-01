@@ -9,4 +9,8 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  server: {
+    // Allow access from other machines on the same LAN
+    host: '0.0.0.0',
+  },
 });
