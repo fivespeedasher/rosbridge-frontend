@@ -24,6 +24,13 @@ interface CameraInfo {
   timestamp: Date;
 }
 
+interface Detection {
+  class_id: number;
+  class_name: string;
+  confidence: number;
+  bbox: [number, number, number, number]; // [xmin, ymin, xmax, ymax]
+}
+
 function App() {
   const [ros, setRos] = useState<Ros | null>(null);
   const [status, setStatus] = useState<ROSStatus>({ connected: false });
@@ -37,9 +44,11 @@ function App() {
   const [showDetectionCloud, setShowDetectionCloud] = useState(false);
   const [detectionFrame, setDetectionFrame] = useState<PointCloudFrame | null>(null);
   const [detectionStats, setDetectionStats] = useState<{ count: number; frameId: string } | null>(null);
+  const [detections, setDetections] = useState<Detection[]>([]);
   const cameraInfoTopicRef = useRef<Topic | null>(null);
   const filterTopicRef = useRef<Topic | null>(null);
   const detectionTopicRef = useRef<Topic | null>(null);
+  const detectionsTopicRef = useRef<Topic | null>(null);
   const serviceRef = useRef<Service | null>(null);
 
   // Connect to ROS bridge
@@ -76,6 +85,9 @@ function App() {
       }
       if (detectionTopicRef.current) {
         detectionTopicRef.current.unsubscribe();
+      }
+      if (detectionsTopicRef.current) {
+        detectionsTopicRef.current.unsubscribe();
       }
       rosInstance.close();
     };
@@ -244,6 +256,52 @@ function App() {
     };
   }, [ros, status.connected, streamActive, showDetectionCloud]);
 
+  // Subscribe to /detections/pixel (bounding box detections as JSON string)
+  useEffect(() => {
+    if (!ros || !status.connected) return;
+
+    if (streamActive && showDetectionCloud) {
+      const detPixelTopic = new Topic({
+        ros: ros,
+        name: '/detections/pixel',
+        messageType: 'std_msgs/String',
+      });
+
+      detPixelTopic.subscribe((message: any) => {
+        try {
+          const data = JSON.parse(message.data);
+          if (Array.isArray(data.detections)) {
+            setDetections(
+              data.detections.map((d: any) => ({
+                class_id: d.class_id,
+                class_name: d.class_name || '',
+                confidence: d.confidence,
+                bbox: d.bbox,
+              }))
+            );
+          }
+        } catch (e) {
+          console.error('Failed to parse /detections/pixel:', e);
+        }
+      });
+
+      detectionsTopicRef.current = detPixelTopic;
+    } else {
+      if (detectionsTopicRef.current) {
+        detectionsTopicRef.current.unsubscribe();
+        detectionsTopicRef.current = null;
+      }
+      setDetections([]);
+    }
+
+    return () => {
+      if (detectionsTopicRef.current) {
+        detectionsTopicRef.current.unsubscribe();
+        detectionsTopicRef.current = null;
+      }
+    };
+  }, [ros, status.connected, streamActive, showDetectionCloud]);
+
   const callService = async (start: boolean) => {
     if (!serviceRef.current) {
       setStatus(prev => ({ ...prev, error: 'Service not available' }));
@@ -308,25 +366,65 @@ function App() {
   };
 
   const renderStream = () => {
-    if (STREAM_TYPE === 'h264') {
-      return (
-        <video
-          src={STREAM_URL}
-          className="max-w-full max-h-96 object-contain rounded"
-          autoPlay
-          muted
-          playsInline
-          onError={handleStreamError}
-        />
-      );
-    }
-    return (
+    const overlayWidth = cameraInfo?.width || 1280;
+    const overlayHeight = cameraInfo?.height || 720;
+    const showOverlay = showDetectionCloud && detections.length > 0;
+
+    const streamElement = STREAM_TYPE === 'h264' ? (
+      <video
+        src={STREAM_URL}
+        className="max-w-full max-h-96 object-contain rounded"
+        autoPlay
+        muted
+        playsInline
+        onError={handleStreamError}
+      />
+    ) : (
       <img
         src={STREAM_URL}
         alt="ROS Camera MJPEG Stream"
         className="max-w-full max-h-96 object-contain rounded"
         onError={handleStreamError}
       />
+    );
+
+    if (!showOverlay) return streamElement;
+
+    return (
+      <div className="relative inline-block">
+        {streamElement}
+        <svg
+          viewBox={`0 0 ${overlayWidth} ${overlayHeight}`}
+          className="absolute top-0 left-0 w-full h-full pointer-events-none"
+          preserveAspectRatio="xMidYMid meet"
+        >
+          {detections.map((det, i) => {
+            const [xmin, ymin, xmax, ymax] = det.bbox;
+            return (
+              <g key={i}>
+                <rect
+                  x={xmin}
+                  y={ymin}
+                  width={xmax - xmin}
+                  height={ymax - ymin}
+                  fill="none"
+                  stroke="blue"
+                  strokeWidth={Math.max(2, overlayWidth / 400)}
+                />
+                <text
+                  x={xmin}
+                  y={ymin - 4}
+                  fill="blue"
+                  fontSize={Math.max(12, overlayWidth / 80)}
+                  fontWeight="bold"
+                >
+                  {det.class_name} {(det.confidence * 100).toFixed(0)}%
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
     );
   };
 
@@ -528,12 +626,14 @@ function App() {
             <div><strong>Camera Info Topic:</strong> /camera/color/camera_info</div>
             <div><strong>LiDAR Topic:</strong> /livox/filtered (sensor_msgs/PointCloud2)</div>
             <div><strong>Detection Topic:</strong> /livox/inbox_voxel (sensor_msgs/PointCloud2)</div>
+            <div><strong>Detection BBox Topic:</strong> /detections/pixel (std_msgs/String)</div>
             <div><strong>Service:</strong> /ros_web_bridge_node/play_bag</div>
             <div><strong>Bag File:</strong> lvdata_2026-05-11-15-54-05.bag</div>
             <div className="pt-2">
               <strong>Active Subscriptions:</strong> {cameraInfoTopicRef.current ? 'Camera Info ✅' : 'Camera Info ❌'}{' · '}
               {filterTopicRef.current ? 'Filter Cloud ✅' : 'Filter Cloud ❌'}{' · '}
-              {detectionTopicRef.current ? 'Detection Cloud ✅' : 'Detection Cloud ❌'}
+              {detectionTopicRef.current ? 'Detection Cloud ✅' : 'Detection Cloud ❌'}{' · '}
+              {detectionsTopicRef.current ? 'Detection BBox ✅' : 'Detection BBox ❌'}
             </div>
           </CardContent>
         </Card>
