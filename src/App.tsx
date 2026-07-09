@@ -31,11 +31,19 @@ interface Detection {
   bbox: [number, number, number, number]; // [xmin, ymin, xmax, ymax]
 }
 
+const DETECTION_COLORS: Record<string, string> = {
+  box: 'blue',
+  person: 'green',
+  pallet: 'pink',
+  canvas: 'yellow',
+};
+
 function App() {
   const [ros, setRos] = useState<Ros | null>(null);
   const [status, setStatus] = useState<ROSStatus>({ connected: false });
   const [cameraInfo, setCameraInfo] = useState<CameraInfo | null>(null);
   const [streamActive, setStreamActive] = useState(false);
+  const [mode, setMode] = useState<'idle' | 'bag' | 'online'>('idle');
   const [streamError, setStreamError] = useState<string | null>(null);
   const [showCamera, setShowCamera] = useState(true);
   const [showCloudFilter, setShowCloudFilter] = useState(true); // default on — only filtered cloud used
@@ -45,6 +53,14 @@ function App() {
   const [detectionFrame, setDetectionFrame] = useState<PointCloudFrame | null>(null);
   const [detectionStats, setDetectionStats] = useState<{ count: number; frameId: string } | null>(null);
   const [detections, setDetections] = useState<Detection[]>([]);
+  // Carriage info (from ROS topic)
+  const [carriageL, setCarriageL] = useState<number | null>(null);
+  const [carriageW, setCarriageW] = useState<number | null>(null);
+  const [carriageH, setCarriageH] = useState<number | null>(null);
+  // Environment info (from ROS topic)
+  const [closestObject, setClosestObject] = useState<number | null>(null);
+  const [leftSpace, setLeftSpace] = useState<number | null>(null);
+  const [rightSpace, setRightSpace] = useState<number | null>(null);
   const cameraInfoTopicRef = useRef<Topic | null>(null);
   const filterTopicRef = useRef<Topic | null>(null);
   const detectionTopicRef = useRef<Topic | null>(null);
@@ -337,14 +353,28 @@ function App() {
     }
   };
 
-  const handlePlay = () => {
+  const handlePlayBag = () => {
     callService(true);
+    setMode('bag');
     setStreamActive(true);
     setStreamError(null);
   };
 
-  const handleStop = () => {
+  const handleStopBag = () => {
     callService(false);
+    setMode('idle');
+    setStreamActive(false);
+    setStreamError(null);
+  };
+
+  const handleGoOnline = () => {
+    setMode('online');
+    setStreamActive(true);
+    setStreamError(null);
+  };
+
+  const handleGoOffline = () => {
+    setMode('idle');
     setStreamActive(false);
     setStreamError(null);
   };
@@ -400,6 +430,7 @@ function App() {
         >
           {detections.map((det, i) => {
             const [xmin, ymin, xmax, ymax] = det.bbox;
+            const detColor = DETECTION_COLORS[det.class_name] ?? 'blue';
             return (
               <g key={i}>
                 <rect
@@ -408,13 +439,13 @@ function App() {
                   width={xmax - xmin}
                   height={ymax - ymin}
                   fill="none"
-                  stroke="blue"
+                  stroke={detColor}
                   strokeWidth={Math.max(2, overlayWidth / 400)}
                 />
                 <text
                   x={xmin}
                   y={ymin - 4}
-                  fill="blue"
+                  fill={detColor}
                   fontSize={Math.max(12, overlayWidth / 80)}
                   fontWeight="bold"
                 >
@@ -451,23 +482,27 @@ function App() {
         {/* Controls */}
         <Card>
           <CardHeader>
-            <CardTitle>Bag Playback Control</CardTitle>
+            <CardTitle>Playback Control</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex items-center space-x-4">
               <Button
-                onClick={handlePlay}
-                disabled={!status.connected}
-                className="bg-green-600 hover:bg-green-700"
+                onClick={mode === 'bag' ? handleStopBag : handlePlayBag}
+                disabled={!status.connected || mode === 'online'}
+                className={mode === 'bag'
+                  ? "bg-red-600 hover:bg-red-700"
+                  : "bg-green-600 hover:bg-green-700"
+                }
               >
-                Play Bag
+                {mode === 'bag' ? 'Stop Bag' : 'Play Bag'}
               </Button>
               <Button
-                onClick={handleStop}
-                disabled={!status.connected}
-                variant="destructive"
+                onClick={mode === 'online' ? handleGoOffline : handleGoOnline}
+                disabled={!status.connected || mode === 'bag'}
+                variant={mode === 'online' ? 'default' : 'outline'}
+                className={mode === 'online' ? "bg-red-600 hover:bg-red-700" : ""}
               >
-                Stop Bag
+                {mode === 'online' ? 'Go Offline' : 'Go Online'}
               </Button>
             </div>
 
@@ -505,6 +540,52 @@ function App() {
                 <div className="text-red-600">Error: {getErrorMessage()}</div>
               )}
               <div className="text-muted-foreground">{serviceStatusText()}</div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Carriage Info */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Carriage Info</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-3 gap-4 text-center">
+              <div className="space-y-1">
+                <div className="text-sm font-medium text-muted-foreground">L (mm)</div>
+                <div className="text-2xl font-bold tabular-nums">{carriageL ?? '—'}</div>
+              </div>
+              <div className="space-y-1">
+                <div className="text-sm font-medium text-muted-foreground">W (mm)</div>
+                <div className="text-2xl font-bold tabular-nums">{carriageW ?? '—'}</div>
+              </div>
+              <div className="space-y-1">
+                <div className="text-sm font-medium text-muted-foreground">H (mm)</div>
+                <div className="text-2xl font-bold tabular-nums">{carriageH ?? '—'}</div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Environment Info */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Environment Info</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-3 gap-4 text-center">
+              <div className="space-y-1">
+                <div className="text-sm font-medium text-muted-foreground">Closest Object (mm)</div>
+                <div className="text-2xl font-bold tabular-nums">{closestObject ?? '—'}</div>
+              </div>
+              <div className="space-y-1">
+                <div className="text-sm font-medium text-muted-foreground">Left Space (mm)</div>
+                <div className="text-2xl font-bold tabular-nums">{leftSpace ?? '—'}</div>
+              </div>
+              <div className="space-y-1">
+                <div className="text-sm font-medium text-muted-foreground">Right Space (mm)</div>
+                <div className="text-2xl font-bold tabular-nums">{rightSpace ?? '—'}</div>
+              </div>
             </div>
           </CardContent>
         </Card>
