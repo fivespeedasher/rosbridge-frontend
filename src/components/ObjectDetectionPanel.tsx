@@ -45,7 +45,7 @@ export default function ObjectDetectionPanel({
       {!collapsed && (
         <div className="panel-body p-0">
           {showDetectionCloud && streamActive ? (
-            <PointCloudView frame={detectionFrame} height={200} pointSize={0.2} />
+            <PointCloudView frame={detectionFrame} height={200} pointSize={0.2} showLabels />
           ) : (
             <div className="objdet-empty">
               <div className="objdet-empty-icon">📡</div>

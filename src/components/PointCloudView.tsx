@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { Html } from '@react-three/drei';
 import { TrackballControls as TrackballControlsImpl } from 'three/examples/jsm/controls/TrackballControls.js';
 import * as THREE from 'three';
 import { rangeOf } from '@/lib/pointcloud2';
@@ -20,8 +21,7 @@ interface PointsProps {
 
 /**
  * Renders a single frame of the point cloud as a THREE.Points mesh, colored
- * per-point by intensity (low → dark blue, high → bright yellow, a simple
- * "turbo-ish" gradient). Geometry is rebuilt whenever a new frame arrives.
+ * per-point by intensity.
  */
 function Points({ frame, pointSize = 0.05 }: PointsProps) {
   const pointsRef = useRef<THREE.Points>(null);
@@ -36,12 +36,10 @@ function Points({ frame, pointSize = 0.05 }: PointsProps) {
     return { geometry: geo, material: mat };
   }, []);
 
-  // Update material point size when prop changes.
   useEffect(() => {
     material.size = pointSize;
   }, [pointSize, material]);
 
-  // Rebuild geometry + per-point colors whenever the frame changes.
   useEffect(() => {
     if (!frame || frame.count === 0) {
       geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(0), 3));
@@ -50,20 +48,14 @@ function Points({ frame, pointSize = 0.05 }: PointsProps) {
       return;
     }
 
-    geometry.setAttribute(
-      'position',
-      new THREE.BufferAttribute(frame.positions, 3)
-    );
+    geometry.setAttribute('position', new THREE.BufferAttribute(frame.positions, 3));
 
-    // Map intensity → RGB. Normalizing by the in-frame [min,max] keeps every
-    // frame visually legible regardless of absolute reflectance scale.
     const [min, max] = rangeOf(frame.intensities);
     const span = max - min || 1;
     const colors = new Float32Array(frame.count * 3);
     const c = new THREE.Color();
     for (let i = 0; i < frame.count; i++) {
-      const t = (frame.intensities[i] - min) / span; // 0..1
-      // Dark blue → cyan → green → yellow gradient.
+      const t = (frame.intensities[i] - min) / span;
       c.setHSL(0.66 * (1 - t), 0.9, 0.35 + 0.35 * t);
       colors[i * 3 + 0] = c.r;
       colors[i * 3 + 1] = c.g;
@@ -84,18 +76,37 @@ function Points({ frame, pointSize = 0.05 }: PointsProps) {
 }
 
 /**
- * TrackballControls wrapper — no polar/azimuth limits, so you get full
- * unrestricted 360° rotation in any direction. No gimbal lock.
- *
- * Also auto-fits the camera to the cloud's bounding sphere on the first
- * frame, then leaves control to the user.
+ * Renders HTML coordinate labels next to each point.
+ * Uses drei's <Html> which follows 3D position and stays readable.
+ */
+function PointLabels({ frame }: { frame: PointCloudFrame | null }) {
+  if (!frame || frame.count === 0) return null;
+
+  const labels: React.ReactNode[] = [];
+  for (let i = 0; i < frame.count; i++) {
+    const x = frame.positions[i * 3];
+    const y = frame.positions[i * 3 + 1];
+    const z = frame.positions[i * 3 + 2];
+    labels.push(
+      <Html key={i} position={[x, y, z]} style={{ pointerEvents: 'none' }}>
+        <div className="coord-label-3d">
+          ({x.toFixed(2)}, {y.toFixed(2)}, {z.toFixed(2)})
+        </div>
+      </Html>,
+    );
+  }
+
+  return <>{labels}</>;
+}
+
+/**
+ * TrackballControls wrapper.
  */
 function TrackballCamera({ frame }: { frame: PointCloudFrame | null }) {
   const controlsRef = useRef<TrackballControlsImpl | null>(null);
   const fittedRef = useRef(false);
   const { camera, gl } = useThree();
 
-  // Create TrackballControls when the canvas mounts
   useEffect(() => {
     const controls = new TrackballControlsImpl(camera, gl.domElement);
     controls.rotateSpeed = 1.0;
@@ -112,7 +123,6 @@ function TrackballCamera({ frame }: { frame: PointCloudFrame | null }) {
     };
   }, [camera, gl]);
 
-  // Auto-fit to the cloud's bounding sphere on the first frame
   useEffect(() => {
     if (fittedRef.current) return;
     if (!frame || frame.count === 0 || !controlsRef.current) return;
@@ -144,7 +154,6 @@ function TrackballCamera({ frame }: { frame: PointCloudFrame | null }) {
     controlsRef.current.update();
   }, [frame, camera]);
 
-  // Tick the controls every frame for damping
   useFrame(() => {
     controlsRef.current?.update();
   });
@@ -158,15 +167,17 @@ export interface PointCloudViewProps {
   height?: number;
   /** Point size. Default 0.05. */
   pointSize?: number;
+  /** Show x,y,z labels next to each point. */
+  showLabels?: boolean;
 }
 
 /**
  * 3D, draggable point cloud viewer. Left-drag orbits, right-drag pans,
  * scroll zooms. The cloud auto-fits to the view on the first frame.
  */
-export default function PointCloudView({ frame, height, pointSize = 0.05 }: PointCloudViewProps) {
+export default function PointCloudView({ frame, height, pointSize = 0.05, showLabels = false }: PointCloudViewProps) {
   const style: React.CSSProperties = height
-    ? { width: '100%', height, overflow: 'hidden', background: '#111622' }
+    ? { width: '100%', height, overflow: 'hidden', background: '#111622', position: 'relative' }
     : { position: 'absolute', inset: 0, overflow: 'hidden', background: '#111622' };
 
   return (
@@ -178,7 +189,7 @@ export default function PointCloudView({ frame, height, pointSize = 0.05 }: Poin
         <color attach="background" args={['#000000']} />
         <ambientLight intensity={0.6} />
         <Points frame={frame} pointSize={pointSize} />
-        {/* Origin axes (sensor frame): X red, Y green, Z blue. */}
+        {showLabels && <PointLabels frame={frame} />}
         <axesHelper args={[1]} />
         <TrackballCamera frame={frame} />
       </Canvas>

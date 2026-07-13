@@ -624,6 +624,22 @@ html, body, #root {
 }
 
 /* ===========================================
+   3D Coordinate Labels (detection cloud)
+   =========================================== */
+.coord-label-3d {
+  background: transparent;
+  color: #e2e8f0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+  transform: translate(8px, -50%);
+}
+
+/* ===========================================
    Buttons
    =========================================== */
 .btn {
