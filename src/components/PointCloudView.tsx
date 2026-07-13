@@ -36,6 +36,11 @@ function Points({ frame, pointSize = 0.05 }: PointsProps) {
     return { geometry: geo, material: mat };
   }, []);
 
+  // Update material point size when prop changes.
+  useEffect(() => {
+    material.size = pointSize;
+  }, [pointSize, material]);
+
   // Rebuild geometry + per-point colors whenever the frame changes.
   useEffect(() => {
     if (!frame || frame.count === 0) {
@@ -149,7 +154,7 @@ function TrackballCamera({ frame }: { frame: PointCloudFrame | null }) {
 
 export interface PointCloudViewProps {
   frame: PointCloudFrame | null;
-  /** Height of the canvas in pixels. */
+  /** Height of the canvas in pixels. If omitted, fills the parent container. */
   height?: number;
   /** Point size. Default 0.05. */
   pointSize?: number;
@@ -159,9 +164,13 @@ export interface PointCloudViewProps {
  * 3D, draggable point cloud viewer. Left-drag orbits, right-drag pans,
  * scroll zooms. The cloud auto-fits to the view on the first frame.
  */
-export default function PointCloudView({ frame, height = 480, pointSize = 0.05 }: PointCloudViewProps) {
+export default function PointCloudView({ frame, height, pointSize = 0.05 }: PointCloudViewProps) {
+  const style: React.CSSProperties = height
+    ? { width: '100%', height, overflow: 'hidden', background: '#111622' }
+    : { position: 'absolute', inset: 0, overflow: 'hidden', background: '#111622' };
+
   return (
-    <div style={{ width: '100%', height }} className="rounded-lg overflow-hidden bg-black">
+    <div style={style}>
       <Canvas
         camera={{ fov: 50, near: 0.1, far: 10000, position: [10, 10, 10] }}
         dpr={[1, 2]}
