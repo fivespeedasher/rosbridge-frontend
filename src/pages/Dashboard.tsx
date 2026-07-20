@@ -93,7 +93,7 @@ export default function Dashboard({
               <div className="section-header">
                 <span className="section-icon">📷</span>
                 <span>视觉图像</span>
-                <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 4 }}>Camera</span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 4 }}>/camera/color/image_raw</span>
                 {cameraInfo && (
                   <span style={{ marginLeft: 'auto', fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
                     {cameraInfo.width}×{cameraInfo.height}
@@ -114,7 +114,7 @@ export default function Dashboard({
             <div className="viz-col">
               <PointCloudPanel
                 title="LiDAR 点云"
-                titleEn="Filter Cloud"
+                titleEn="/livox/filtered"
                 frame={filterFrame}
                 stats={filterStats}
                 active={streamActive}
