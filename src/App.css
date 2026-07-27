@@ -842,6 +842,22 @@ html, body, #root {
   display: flex;
   flex-direction: column;
 }
+.objdet-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.objdet-row:last-child {
+  border-bottom: none;
+}
+.objdet-distance {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--accent);
+  font-weight: 600;
+}
 .objdet-item {
   display: flex;
   align-items: center;
@@ -891,10 +907,6 @@ html, body, #root {
   padding: 30px 14px;
   color: var(--text-muted);
   gap: 4px;
-}
-.objdet-empty-icon {
-  font-size: 28px;
-  opacity: 0.5;
 }
 .objdet-empty-sub {
   font-size: 11px;
@@ -1006,6 +1018,97 @@ html, body, #root {
   font-size: 12px;
   padding: 5px 8px;
   white-space: nowrap;
+}
+.bag-path-row {
+  width: 100%;
+  margin-bottom: 4px;
+}
+.bag-path-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 3px;
+}
+.bag-path-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-input, var(--bg-panel));
+  color: var(--text-primary);
+  outline: none;
+}
+.bag-path-input:focus {
+  border-color: var(--accent);
+}
+
+/* ---- Mode panel sub-components ---- */
+.mode-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mode-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mode-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.mode-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+.mode-dot.active {
+  background: var(--success);
+  animation: pulse 1s infinite;
+}
+.mode-detail {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding-left: 14px;
+}
+.mode-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* ---- Status badge (header right) ---- */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+.status-badge.status-playing {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--success);
+}
+.status-badge .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.status-badge .status-dot.connected {
+  background: var(--success);
+  animation: pulse 1s infinite;
 }
 
 .detection-table .empty-row td {

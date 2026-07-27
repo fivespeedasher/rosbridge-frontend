@@ -6,6 +6,39 @@ import { type PointCloudFrame } from './components/PointCloudView';
 import Header from './components/Header';
 import Dashboard from './pages/Dashboard';
 import StatusBar from './components/StatusBar';
+
+// ---- Device ID (persisted per browser tab) ----
+function getDeviceId(): string {
+  let id = localStorage.getItem('device_id');
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem('device_id', id);
+  }
+  return id;
+}
+
+const DEVICE_ID = getDeviceId();
+
+// ---- Playback state (mirrors backend /playback_status topic) ----
+interface PlaybackState {
+  state: 'idle' | 'playing';
+  owner_device_id: string;
+  bag_path: string;
+  started_at: string;
+}
+
+const INITIAL_PLAYBACK: PlaybackState = {
+  state: 'idle',
+  owner_device_id: '',
+  bag_path: '',
+  started_at: '',
+};
+
+// ---- Object detection: per-class closest distance ----
+interface ObjDistItem {
+  class_name: string;
+  distance: number;
+}
 interface ROSStatus {
   connected: boolean;
   connecting: boolean;
@@ -47,21 +80,26 @@ function App() {
   const [status, setStatus] = useState<ROSStatus>({ connected: false, connecting: false });
   const [cameraInfo, setCameraInfo] = useState<CameraInfo | null>(null);
   const [streamActive, setStreamActive] = useState(false);
-  const [mode, setMode] = useState<'idle' | 'bag' | 'online'>('idle');
   const [streamError, setStreamError] = useState<string | null>(null);
   const [showDetectionCloud, setShowDetectionCloud] = useState(false);
   const [filterFrame, setFilterFrame] = useState<PointCloudFrame | null>(null);
   const [filterStats, setFilterStats] = useState<{ count: number; frameId: string } | null>(null);
-  const [detectionFrame, setDetectionFrame] = useState<PointCloudFrame | null>(null);
-  const [detectionStats, setDetectionStats] = useState<{ count: number; frameId: string } | null>(null);
   const [detections, setDetections] = useState<Detection[]>([]);
+
+  // Multi-device playback state
+  const [playback, setPlayback] = useState<PlaybackState>(INITIAL_PLAYBACK);
+  const [playLoading, setPlayLoading] = useState(false);
+  const [closestDistances, setClosestDistances] = useState<ObjDistItem[]>([]);
+  const [bagPath, setBagPath] = useState('/home/robot/data/calib/lidar_vision_ip2/lvdata_2026-05-11-15-54-05.bag');
 
   const rosRef = useRef<Ros | null>(null);
   const cameraInfoTopicRef = useRef<Topic | null>(null);
   const filterTopicRef = useRef<Topic | null>(null);
-  const detectionTopicRef = useRef<Topic | null>(null);
   const detectionsTopicRef = useRef<Topic | null>(null);
   const serviceRef = useRef<Service | null>(null);
+  const playbackTopicRef = useRef<Topic | null>(null);
+  const getStateRef = useRef<Service | null>(null);
+  const closestDistTopicRef = useRef<Topic | null>(null);
 
   // Connect to ROS bridge
   useEffect(() => {
@@ -79,6 +117,16 @@ function App() {
     rosInstance.on('close', () => {
       rosRef.current = null;
       setStatus({ connected: false, connecting: false });
+      setPlayback(INITIAL_PLAYBACK);
+      setOnlineMode(false);
+      setPlayLoading(false);
+      setStreamActive(false);
+      setStreamError(null);
+      setCameraInfo(null);
+      setClosestDistances([]);
+      setFilterFrame(null);
+      setFilterStats(null);
+      setDetections([]);
     });
 
     setRos(rosInstance);
@@ -86,7 +134,6 @@ function App() {
     return () => {
       if (cameraInfoTopicRef.current) cameraInfoTopicRef.current.unsubscribe();
       if (filterTopicRef.current) filterTopicRef.current.unsubscribe();
-      if (detectionTopicRef.current) detectionTopicRef.current.unsubscribe();
       if (detectionsTopicRef.current) detectionsTopicRef.current.unsubscribe();
       rosInstance.close();
     };
@@ -113,6 +160,16 @@ function App() {
     rosInstance.on('close', () => {
       rosRef.current = null;
       setStatus({ connected: false, connecting: false });
+      setPlayback(INITIAL_PLAYBACK);
+      setOnlineMode(false);
+      setPlayLoading(false);
+      setStreamActive(false);
+      setStreamError(null);
+      setCameraInfo(null);
+      setClosestDistances([]);
+      setFilterFrame(null);
+      setFilterStats(null);
+      setDetections([]);
     });
   };
 
@@ -145,6 +202,55 @@ function App() {
     serviceRef.current = svc;
   }, [ros, status.connected]);
 
+  // Playback status subscription (latched topic — multi-device sync)
+  useEffect(() => {
+    if (!ros || !status.connected) return;
+    const topic = new Topic({ ros, name: '/playback_status', messageType: 'ros_web_bridge/PlaybackStatus' });
+    topic.subscribe((msg: any) => {
+      setPlayback({
+        state: msg.state || 'idle',
+        owner_device_id: msg.owner_device_id || '',
+        bag_path: msg.bag_path || '',
+        started_at: msg.started_at || '',
+      });
+    });
+    playbackTopicRef.current = topic;
+
+    // Query current state on connect (in case another device already started)
+    const getStateSvc = new Service({ ros, name: '/ros_web_bridge_node/get_playback_state', serviceType: 'ros_web_bridge/GetPlaybackState' });
+    getStateRef.current = getStateSvc;
+    getStateSvc.callService({}, (result: any) => {
+      setPlayback({
+        state: result.state || 'idle',
+        owner_device_id: result.owner_device_id || '',
+        bag_path: result.bag_path || '',
+        started_at: result.started_at || '',
+      });
+    });
+
+    return () => { topic.unsubscribe(); playbackTopicRef.current = null; getStateRef.current = null; };
+  }, [ros, status.connected]);
+
+  // /object/closest_distances subscription
+  useEffect(() => {
+    if (!ros || !status.connected) return;
+    const topic = new Topic({ ros, name: '/object/closest_distances', messageType: 'std_msgs/String' });
+    topic.subscribe((msg: any) => {
+      try {
+        const data = JSON.parse(msg.data);
+        const items = Array.isArray(data) ? data : (data.objects ?? []);
+        if (Array.isArray(items)) {
+          setClosestDistances(items.map((item: any) => ({
+            class_name: String(item.class_name ?? item.class ?? ''),
+            distance: Number(item.distance ?? 0),
+          })));
+        }
+      } catch { /* ignore parse errors */ }
+    });
+    closestDistTopicRef.current = topic;
+    return () => { topic.unsubscribe(); closestDistTopicRef.current = null; };
+  }, [ros, status.connected]);
+
   // Filter cloud subscription
   useEffect(() => {
     if (!ros || !status.connected || !streamActive) {
@@ -171,25 +277,6 @@ function App() {
     svc.callService({ data: showDetectionCloud }, (response: any) => console.log('Detection enable:', response.message));
   }, [ros, status.connected, showDetectionCloud]);
 
-  // Detection cloud subscription
-  useEffect(() => {
-    if (!ros || !status.connected || !streamActive || !showDetectionCloud) {
-      if (detectionTopicRef.current) { detectionTopicRef.current.unsubscribe(); detectionTopicRef.current = null; }
-      setDetectionFrame(null);
-      return;
-    }
-    const topic = new Topic({ ros, name: '/livox/inbox_voxel', messageType: 'sensor_msgs/PointCloud2', compression: 'cbor' });
-    topic.subscribe((message: any) => {
-      const decoded = decodePointCloud2(message as PointCloud2);
-      if (decoded.count > 0) {
-        setDetectionFrame({ positions: decoded.positions, intensities: decoded.intensities, count: decoded.count, frameId: decoded.frameId });
-        setDetectionStats({ count: decoded.count, frameId: decoded.frameId });
-      }
-    });
-    detectionTopicRef.current = topic;
-    return () => { topic.unsubscribe(); detectionTopicRef.current = null; };
-  }, [ros, status.connected, streamActive, showDetectionCloud]);
-
   // Detections pixel subscription
   useEffect(() => {
     if (!ros || !status.connected || !streamActive || !showDetectionCloud) {
@@ -213,17 +300,29 @@ function App() {
   // ---- Actions ----
   const callService = async (start: boolean) => {
     if (!serviceRef.current) { setStatus(prev => ({ ...prev, error: 'Service not available' })); return; }
-    serviceRef.current.callService({ start }, (response: any) => {
+    setPlayLoading(true);
+    serviceRef.current.callService({ start, device_id: DEVICE_ID, bag_path: bagPath }, (response: any) => {
+      setPlayLoading(false);
       setStatus(prev => ({ ...prev, serviceResult: { success: response.success, timestamp: new Date() } }));
+      // Update playback state from response
+      setPlayback({
+        state: response.state || 'idle',
+        owner_device_id: response.owner_device_id || '',
+        bag_path: response.bag_path || '',
+        started_at: response.started_at || '',
+      });
     });
   };
 
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [onlineMode, setOnlineMode] = useState(false);
 
-  const handlePlayBag = () => { callService(true); setMode('bag'); setStreamActive(true); setStreamError(null); setIsPlaying(true); };
-  const handleStopBag = () => { callService(false); setMode('idle'); setStreamActive(false); setStreamError(null); setIsPlaying(false); };
-  const handleGoOnline = () => { setMode('online'); setStreamActive(true); setStreamError(null); };
-  const handleBackToIdle = () => { if (mode === 'bag') handleStopBag(); else { setMode('idle'); setStreamActive(false); setStreamError(null); } };
+  // Derive mode: playback state takes priority, then online mode
+  const mode: 'idle' | 'bag' | 'online' = playback.state === 'playing' ? 'bag' : (onlineMode ? 'online' : 'idle');
+
+  const handlePlayBag = () => { callService(true); setStreamActive(true); setStreamError(null); };
+  const handleStopBag = () => { callService(false); setStreamActive(false); setStreamError(null); };
+  const handleGoOnline = () => { setOnlineMode(true); setStreamActive(true); setStreamError(null); };
+  const handleBackToIdle = () => { if (mode === 'bag') handleStopBag(); else { setOnlineMode(false); setStreamActive(false); setStreamError(null); } };
   const handleStreamError = () => { setStreamError('Stream unavailable — is web_video_server running?'); };
 
   // Keyboard shortcuts
@@ -234,6 +333,23 @@ function App() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [mode]);
+
+  // Stop playback via HTTP bridge on page unload (graceful disconnect)
+  useEffect(() => {
+    const onUnload = () => {
+      if (playback.state === 'playing') {
+        try {
+          const payload = JSON.stringify({ device_id: DEVICE_ID });
+          navigator.sendBeacon(
+            'http://' + window.location.hostname + ':9094/stop_bag',
+            new Blob([payload], { type: 'application/json' }),
+          );
+        } catch { /* best-effort */ }
+      }
+    };
+    window.addEventListener('beforeunload', onUnload);
+    return () => window.removeEventListener('beforeunload', onUnload);
+  }, [playback.state]);
 
   // Count active topics
   const activeTopics = streamActive ? (showDetectionCloud ? 4 : 2) : 0;
@@ -247,7 +363,7 @@ function App() {
           connecting={status.connecting}
           connectionError={status.error ?? null}
           mode={mode}
-          isPlaying={isPlaying}
+          isPlaying={playback.state === 'playing'}
           showDetectionCloud={showDetectionCloud}
           cameraInfo={cameraInfo}
           detections={detections}
@@ -255,8 +371,7 @@ function App() {
           onStreamError={handleStreamError}
           filterFrame={filterFrame}
           filterStats={filterStats}
-          detectionFrame={detectionFrame}
-          detectionStats={detectionStats}
+          closestDistances={closestDistances}
           streamActive={streamActive}
           onPlayBag={handlePlayBag}
           onStopBag={handleStopBag}
@@ -265,6 +380,12 @@ function App() {
           onConnect={handleConnect}
           onDisconnect={handleDisconnect}
           onToggleDetectionCloud={setShowDetectionCloud}
+          playbackState={playback.state}
+          ownerDeviceId={playback.owner_device_id}
+          deviceId={DEVICE_ID}
+          playLoading={playLoading}
+          bagPath={bagPath}
+          onBagPathChange={setBagPath}
         />
       </main>
       <StatusBar

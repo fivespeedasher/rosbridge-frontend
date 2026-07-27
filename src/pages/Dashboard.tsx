@@ -24,9 +24,13 @@ interface DashboardProps {
   // Point cloud
   filterFrame: PointCloudFrame | null;
   filterStats: { count: number; frameId: string } | null;
-  detectionFrame: PointCloudFrame | null;
-  detectionStats: { count: number; frameId: string } | null;
+  closestDistances: Array<{ class_name: string; distance: number }>;
   streamActive: boolean;
+  // Multi-device playback
+  playbackState: 'idle' | 'playing';
+  ownerDeviceId: string;
+  deviceId: string;
+  playLoading: boolean;
   // Actions
   onPlayBag: () => void;
   onStopBag: () => void;
@@ -35,6 +39,8 @@ interface DashboardProps {
   onConnect: () => void;
   onDisconnect: () => void;
   onToggleDetectionCloud: (v: boolean) => void;
+  bagPath: string;
+  onBagPathChange: (v: string) => void;
 }
 
 export default function Dashboard({
@@ -50,9 +56,12 @@ export default function Dashboard({
   onStreamError,
   filterFrame,
   filterStats,
-  detectionFrame,
-  detectionStats,
+  closestDistances,
   streamActive,
+  playbackState,
+  ownerDeviceId,
+  deviceId,
+  playLoading,
   onPlayBag,
   onStopBag,
   onGoOnline,
@@ -60,6 +69,8 @@ export default function Dashboard({
   onConnect,
   onDisconnect,
   onToggleDetectionCloud,
+  bagPath,
+  onBagPathChange,
 }: DashboardProps) {
   return (
     <div className="dashboard">
@@ -84,6 +95,12 @@ export default function Dashboard({
             onGoOnline={onGoOnline}
             onBackToIdle={onBackToIdle}
             onToggleDetectionCloud={onToggleDetectionCloud}
+            bagPath={bagPath}
+            onBagPathChange={onBagPathChange}
+            playbackState={playbackState}
+            ownerDeviceId={ownerDeviceId}
+            deviceId={deviceId}
+            playLoading={playLoading}
           />
         </aside>
         <main className="dashboard-main">
@@ -132,10 +149,7 @@ export default function Dashboard({
         <div className="bottom-col">
           <ObjectDetectionPanel
             connected={connected}
-            showDetectionCloud={showDetectionCloud}
-            detectionFrame={detectionFrame}
-            detectionStats={detectionStats}
-            streamActive={streamActive}
+            closestDistances={closestDistances}
           />
         </div>
       </div>
